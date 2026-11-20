@@ -689,33 +689,20 @@ public class VideoEditor extends AppCompatActivity implements
 
     @Override
     public boolean onOptionsItemSelected(MenuItem item) {
-
-        switch (item.getItemId()) {
-
-
-            case R.id.menu_save:
-
-                if (saveFile != null && saveFile.exists())
-                    addVideoToGallery(saveFile);
-
-                return true;
-
-            case R.id.menu_share:
-
-                shareVideo();
-
-                return true;
-
-            case android.R.id.home:
-                // Pull up about screen
-                finish();
-
-                return true;
-
-
-            default:
-                return false;
+        // if/else, not switch: R.id values are not compile-time constants since AGP 8
+        int id = item.getItemId();
+        if (id == R.id.menu_save) {
+            if (saveFile != null && saveFile.exists())
+                addVideoToGallery(saveFile);
+            return true;
+        } else if (id == R.id.menu_share) {
+            shareVideo();
+            return true;
+        } else if (id == android.R.id.home) {
+            finish();
+            return true;
         }
+        return false;
     }
 
     private GPUMp4Composer mVideoProc = null;

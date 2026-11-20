@@ -1232,45 +1232,24 @@ public class ImageEditor extends AppCompatActivity implements OnTouchListener, O
      */
 	@Override
 	public boolean onOptionsItemSelected(MenuItem item) {
-
-		switch (item.getItemId()) {
-
-			case R.id.menu_save:
-
-				checkWritePermissionThenSave();
-
-
-				return true;
-
-			case R.id.menu_share:
-				// Share Image
-				shareImage();
-
-
-				return true;
-        	
-/*
- 			case R.id.menu_delete_original:
-        		// Delete Original Image
-        		handleDelete();
-        		
-        		return true;
-*/
-            case android.R.id.home:
-                // Pull up about screen
-				finish();
-
-				return true;
-
-			case R.id.menu_preview:
-				boolean checked = item.isChecked();
-				item.setChecked(!checked);
-				showPreview(!checked);
-				return true;
-
-			default:
-				return false;
+		// if/else, not switch: R.id values are not compile-time constants since AGP 8
+		int id = item.getItemId();
+		if (id == R.id.menu_save) {
+			checkWritePermissionThenSave();
+			return true;
+		} else if (id == R.id.menu_share) {
+			shareImage();
+			return true;
+		} else if (id == android.R.id.home) {
+			finish();
+			return true;
+		} else if (id == R.id.menu_preview) {
+			boolean checked = item.isChecked();
+			item.setChecked(!checked);
+			showPreview(!checked);
+			return true;
 		}
+		return false;
 	}
 
 	/*
