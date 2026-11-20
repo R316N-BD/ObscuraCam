@@ -1,32 +1,22 @@
 buildscript {
     repositories {
-        mavenCentral()
-        jcenter()
         google()
-
+        mavenCentral()
     }
     dependencies {
-        classpath 'com.android.tools.build:gradle:4.2.2'
+        classpath 'com.android.tools.build:gradle:8.7.3'
     }
 }
-
 
 allprojects {
     repositories {
-        mavenCentral()
-        jcenter()
         google()
+        mavenCentral()
+        // Only needed for GPUVideo-android, which is published from GitHub via JitPack.
         maven { url 'https://jitpack.io' }
-    }
-    project.ext {
-        // these are common variables used in */build.gradle
-        buildToolsVersion="30.0.3"
-        compileSdkVersion=30
-        minSdkVersion=21
-        targetSdkVersion=30
     }
 }
 
-task clean(type: Delete) {
-    delete rootProject.buildDir
+tasks.register('clean', Delete) {
+    delete rootProject.layout.buildDirectory
 }

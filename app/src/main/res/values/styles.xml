@@ -11,8 +11,11 @@
  
 <resources>
 
+	<!-- Version-specific tweaks live in Base.AppTheme (see values-v35). -->
+	<style name="Base.AppTheme" parent="Theme.AppCompat.Light.DarkActionBar" />
+
 	<!-- Base application theme. -->
-	<style name="AppTheme" parent="Theme.AppCompat.Light.DarkActionBar">
+	<style name="AppTheme" parent="Base.AppTheme">
 		<!-- Customize your theme here. -->
 		<item name="colorPrimary">@color/colorPrimary</item>
 		<item name="colorPrimaryDark">@color/colorPrimaryDark</item>
