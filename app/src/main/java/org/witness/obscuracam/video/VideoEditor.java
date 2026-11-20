@@ -12,6 +12,7 @@ package org.witness.obscuracam.video;
 
 import android.Manifest;
 import android.content.ContentUris;
+import android.content.ContentValues;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
@@ -62,6 +63,7 @@ import com.daasuu.gpuv.egl.filter.GlZoomBlurFilter;
 import com.google.android.material.snackbar.Snackbar;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
+import androidx.core.content.FileProvider;
 
 import android.util.Log;
 import android.view.Display;
@@ -88,6 +90,8 @@ import org.witness.obscuracam.photo.detect.AndroidFaceDetection;
 import org.witness.obscuracam.photo.detect.DetectedFace;
 import org.witness.obscuracam.photo.filters.PixelizeObscure;
 import org.witness.obscuracam.ObscuraApp;
+import org.witness.obscuracam.util.MediaPermissions;
+import org.witness.sscphase1.BuildConfig;
 import org.witness.sscphase1.R;
 
 import java.io.File;
@@ -271,7 +275,7 @@ public class VideoEditor extends AppCompatActivity implements
             }
 
             if (originalVideoUri == null) {
-                if (savedInstanceState.getString("path") != null) {
+                if (savedInstanceState != null && savedInstanceState.getString("path") != null) {
                     originalVideoUri = Uri.fromFile(new File(savedInstanceState.getString("path")));
                     recordingFile = new File(savedInstanceState.getString("path"));
                 } else {
@@ -280,7 +284,12 @@ public class VideoEditor extends AppCompatActivity implements
                 }
             } else {
 
-                recordingFile = new File(pullPathFromUri(originalVideoUri));
+                recordingFile = resolveReadableFile(originalVideoUri);
+                if (recordingFile == null) {
+                    Toast.makeText(this, R.string.error_loading_media, Toast.LENGTH_LONG).show();
+                    finish();
+                    return;
+                }
             }
         }
 
@@ -611,13 +620,57 @@ public class VideoEditor extends AppCompatActivity implements
     public String pullPathFromUri(Uri originalUri) {
         String originalVideoFilePath = originalUri.toString();
         String[] columnsToSelect = {MediaStore.Video.Media.DATA};
-        Cursor videoCursor = getContentResolver().query(originalUri, columnsToSelect, null, null, null);
-        if (videoCursor != null && videoCursor.getCount() == 1) {
-            videoCursor.moveToFirst();
-            originalVideoFilePath = videoCursor.getString(videoCursor.getColumnIndex(MediaStore.Images.Media.DATA));
+        Cursor videoCursor = null;
+        try {
+            videoCursor = getContentResolver().query(originalUri, columnsToSelect, null, null, null);
+            if (videoCursor != null && videoCursor.getCount() == 1 && videoCursor.moveToFirst()) {
+                int col = videoCursor.getColumnIndex(MediaStore.Video.Media.DATA);
+                if (col >= 0 && videoCursor.getString(col) != null)
+                    originalVideoFilePath = videoCursor.getString(col);
+            }
+        } catch (RuntimeException e) {
+            // Document providers don't have a DATA column; fall through.
+        } finally {
+            if (videoCursor != null)
+                videoCursor.close();
         }
 
         return originalVideoFilePath;
+    }
+
+    /**
+     * The video tools need a real file path. Gallery items have one; content:// URIs from the
+     * document picker or other apps often don't, so copy those into the cache first.
+     */
+    private File resolveReadableFile(Uri uri) {
+        if (uri.getScheme() == null || "file".equals(uri.getScheme())) {
+            return new File(uri.getPath());
+        }
+        File direct = new File(pullPathFromUri(uri));
+        if (direct.isFile() && direct.canRead())
+            return direct;
+        try {
+            File copy = new File(getCacheDir(), "input-video.mp4");
+            java.io.InputStream in = getContentResolver().openInputStream(uri);
+            if (in == null)
+                return null;
+            FileOutputStream out = new FileOutputStream(copy);
+            try {
+                IOUtils.copyLarge(in, out);
+            } finally {
+                IOUtils.closeQuietly(in);
+                IOUtils.closeQuietly(out);
+            }
+            return copy;
+        } catch (IOException | RuntimeException e) {
+            Log.e(LOGTAG, "could not copy video from " + uri, e);
+            return null;
+        }
+    }
+
+    /** content:// Uri for a file in our cache or external storage (see res/xml/camera_capture_paths.xml). */
+    private Uri shareableUri(File file) {
+        return FileProvider.getUriForFile(this, BuildConfig.APPLICATION_ID + ".provider", file);
     }
 
 
@@ -830,9 +883,11 @@ public class VideoEditor extends AppCompatActivity implements
             mSnackbar = null;
         }
 
-        File fileExport = saveVideoExternal(videoToAdd);
+        final Uri fileExport = saveVideoExternal(videoToAdd);
 
-        if (fileExport != null) {
+        if (fileExport == null) {
+            showFailure(getString(R.string.error_saving));
+        } else {
             mSnackbar = Snackbar.make(findViewById(R.id.frameRoot), R.string.processing_complete, Snackbar.LENGTH_LONG);
             mSnackbar.setAction(R.string.action_open, new OnClickListener() {
                 @Override
@@ -841,56 +896,81 @@ public class VideoEditor extends AppCompatActivity implements
                 }
             });
             mSnackbar.show();
-
-            sendBroadcast(new Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE, Uri.fromFile(fileExport)));
         }
 
     }
 
+    /** Only needed before Android 10; MediaStore needs no permission after that. */
     public boolean isStoragePermissionGranted() {
-        String TAG = "Storage Permission";
-        if (Build.VERSION.SDK_INT >= 23) {
-            if (this.checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
-                    == PackageManager.PERMISSION_GRANTED) {
-                Log.v(TAG, "Permission is granted");
-                return true;
-            } else {
-                Log.v(TAG, "Permission is revoked");
-                ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE}, 1);
-                return false;
-            }
-        }
-        else { //permission is automatically granted on sdk<23 upon installation
-            Log.v(TAG,"Permission is granted");
+        String[] needed = MediaPermissions.forWriting();
+        if (MediaPermissions.hasAll(this, needed))
             return true;
-        }
+        ActivityCompat.requestPermissions(this, needed, 1);
+        return false;
     }
 
-    public File saveVideoExternal(File saveFile) {
-        if (isStoragePermissionGranted()) { // check or ask permission
-            File fileMediaExport = null;
+    /**
+     * Copies the rendered video into Movies/ObscuraCam and indexes it in the gallery.
+     * Android 10+ must use MediaStore: writing files into Movies/ directly is blocked.
+     *
+     * @return the Uri to open the saved video with, or null
+     */
+    public Uri saveVideoExternal(File saveFile) {
+        if (!isStoragePermissionGranted())
+            return null;
+
+        SecureRandom random = new SecureRandom();
+        String fileName = String.format("%06x", random.nextInt(0x1000000)) + "-" + saveFile.getName();
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            ContentValues values = new ContentValues();
+            values.put(MediaStore.MediaColumns.DISPLAY_NAME, fileName);
+            values.put(MediaStore.MediaColumns.MIME_TYPE, MIME_TYPE_MP4);
+            values.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/ObscuraCam");
+            values.put(MediaStore.MediaColumns.IS_PENDING, 1);
+            Uri target = getContentResolver().insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values);
+            if (target == null)
+                return null;
             try {
-                SecureRandom random = new SecureRandom();
-                int num = random.nextInt(0x1000000);
-                String formatted = String.format("%06x", num);
-                String fileName = formatted + "-" + saveFile.getName();
-
-                fileMediaExport = new File(Environment.getExternalStoragePublicDirectory(DIRECTORY_MOVIES),fileName);
-
-
-                IOUtils.copyLarge(new FileInputStream(saveFile),new FileOutputStream(fileMediaExport));
-
-            } catch (Exception e) {
-                e.printStackTrace();
+                java.io.OutputStream out = getContentResolver().openOutputStream(target);
+                FileInputStream in = new FileInputStream(saveFile);
+                try {
+                    IOUtils.copyLarge(in, out);
+                } finally {
+                    IOUtils.closeQuietly(in);
+                    IOUtils.closeQuietly(out);
+                }
+                ContentValues done = new ContentValues();
+                done.put(MediaStore.MediaColumns.IS_PENDING, 0);
+                getContentResolver().update(target, done, null, null);
+                return target;
+            } catch (IOException | RuntimeException e) {
+                Log.e(LOGTAG, "error saving video", e);
+                getContentResolver().delete(target, null, null);
+                return null;
             }
-
-            if (fileMediaExport != null)
-            MediaScannerConnection.scanFile(this, new String[]{fileMediaExport.toString()}, new String[]{fileMediaExport.getName()}, null);
-
-            return fileMediaExport;
         }
 
-        return null;
+        File dir = new File(Environment.getExternalStoragePublicDirectory(DIRECTORY_MOVIES), "ObscuraCam");
+        File fileMediaExport = new File(dir, fileName);
+        try {
+            if (!dir.exists() && !dir.mkdirs())
+                return null;
+            FileInputStream in = new FileInputStream(saveFile);
+            FileOutputStream out = new FileOutputStream(fileMediaExport);
+            try {
+                IOUtils.copyLarge(in, out);
+            } finally {
+                IOUtils.closeQuietly(in);
+                IOUtils.closeQuietly(out);
+            }
+        } catch (IOException e) {
+            Log.e(LOGTAG, "error saving video", e);
+            fileMediaExport.delete();
+            return null;
+        }
+        MediaScannerConnection.scanFile(this, new String[]{fileMediaExport.toString()}, new String[]{MIME_TYPE_MP4}, null);
+        return shareableUri(fileMediaExport);
     }
 
     Snackbar mSnackbar;
@@ -911,13 +991,13 @@ public class VideoEditor extends AppCompatActivity implements
         snackbar.show();
     }
 
-    private void playVideoExternal(File fileExported) {
+    private void playVideoExternal(Uri fileExported) {
 
-        if (saveFile != null && saveFile.exists()) {
+        if (fileExported != null) {
 
             Intent intent = new Intent(android.content.Intent.ACTION_VIEW);
-            intent.setDataAndType(Uri.fromFile(fileExported), MIME_TYPE_VIDEO);
-            intent.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP);
+            intent.setDataAndType(fileExported, MIME_TYPE_VIDEO);
+            intent.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_GRANT_READ_URI_PERMISSION);
 
             startActivity(intent);
         }
@@ -930,7 +1010,8 @@ public class VideoEditor extends AppCompatActivity implements
 
             Intent intent = new Intent(Intent.ACTION_SEND);
             intent.setType(MIME_TYPE_VIDEO);
-            intent.putExtra(Intent.EXTRA_STREAM, Uri.fromFile(saveFile));
+            intent.putExtra(Intent.EXTRA_STREAM, shareableUri(saveFile));
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
             startActivityForResult(Intent.createChooser(intent, "Share Video"), 0);
         }
     }
