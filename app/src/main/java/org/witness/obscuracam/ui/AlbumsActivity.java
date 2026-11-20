@@ -1,6 +1,7 @@
 package org.witness.obscuracam.ui;
 
 import android.content.Intent;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import androidx.appcompat.app.AppCompatActivity;
@@ -85,7 +86,8 @@ public class AlbumsActivity extends AppCompatActivity implements AlbumAdapter.Al
     public void onPickExternalSelected() {
         Intent intent = new Intent(Build.VERSION.SDK_INT >= 19 ? Intent.ACTION_OPEN_DOCUMENT : Intent.ACTION_GET_CONTENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
-        intent.setType("image/*");
+        intent.setType("*/*");
+        intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"image/*", "video/*"});
         startActivityForResult(intent, PICK_EXTERNAL_REQUEST);
     }
 
@@ -147,7 +149,21 @@ public class AlbumsActivity extends AppCompatActivity implements AlbumAdapter.Al
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         if (requestCode == PICK_EXTERNAL_REQUEST) {
             if (resultCode == RESULT_OK && data != null && data.getData() != null) {
-                onPhotoSelected(data.getData().toString(), null); //TODO - video
+                Uri uri = data.getData();
+                // The grant from the picker is tied to this activity, which finishes right
+                // away; keep a persistable grant so the editor can still read the file (#130, #140).
+                if (Build.VERSION.SDK_INT >= 19 && (data.getFlags() & Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION) != 0) {
+                    try {
+                        getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                    } catch (SecurityException ignored) {
+                    }
+                }
+                String type = getContentResolver().getType(uri);
+                if (type != null && type.startsWith("video/")) {
+                    onVideoSelected(uri.toString(), null);
+                } else {
+                    onPhotoSelected(uri.toString(), null);
+                }
             }
         }
     }
