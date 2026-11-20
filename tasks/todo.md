@@ -42,4 +42,6 @@ that builds the APK on every push (that workflow also covers #91 and #152).
 - Verification: GitHub Actions builds the APK on the fork. No device or emulator testing was
   possible in this environment, so runtime behaviour (permission dialogs, MediaStore saving,
   sharing) still needs a check on Android 10, 13 and 15 phones.
-- Lesson from run 1: validate the Gradle wrapper jar before trusting a build setup.
+- CI lessons: (1) validate the Gradle wrapper jar before trusting a build setup;
+  (2) AGP 8 makes R.id non-final, so `switch` on resource ids must become if/else;
+  (3) a javac syntax pass without the SDK catches duplicate declarations early.
