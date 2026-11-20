@@ -1370,7 +1370,8 @@ public class ImageEditor extends AppCompatActivity implements OnTouchListener, O
      * Goes through the regions that have been defined and creates a bitmap with them obscured.
      * This may introduce memory issues and therefore have to be done in a different manner.
      */
-	private Bitmap createObscuredBitmap(int width, int height, boolean showBorders) {
+	// synchronized: the save thread and touch-driven redraws share obscuredBmp/obscuredCanvas
+	private synchronized Bitmap createObscuredBitmap(int width, int height, boolean showBorders) {
 		if (imageBitmap == null)
 			return null;
 
