@@ -5,6 +5,7 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.ProgressDialog;
 import android.content.ContentUris;
+import android.content.ContentValues;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
@@ -25,7 +26,8 @@ import android.graphics.Paint.Style;
 import android.graphics.PixelFormat;
 import android.graphics.PointF;
 import android.graphics.RectF;
-import android.media.ExifInterface;
+import android.media.MediaScannerConnection;
+import androidx.exifinterface.media.ExifInterface;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -65,6 +67,7 @@ import org.witness.obscuracam.photo.filters.MaskObscure;
 import org.witness.obscuracam.photo.filters.RegionProcesser;
 import org.witness.obscuracam.photo.jpegredaction.JpegRedaction;
 import org.witness.obscuracam.ObscuraApp;
+import org.witness.obscuracam.util.MediaPermissions;
 import org.witness.sscphase1.BuildConfig;
 import org.witness.sscphase1.R;
 
@@ -198,7 +201,14 @@ public class ImageEditor extends AppCompatActivity implements OnTouchListener, O
 	// Constant for temp filename
 	public final static String TMP_FILE_NAME = "tmp.jpg";
 
+	// Only referenced by the legacy ObscuraApp activity, which is not in the manifest.
 	public final static String TMP_FILE_DIRECTORY = "/Android/data/org.witness.sscphase1/files/";
+
+	// Subfolder of the cache dir for shared temp images (see res/xml/camera_capture_paths.xml)
+	private final static String SHARE_DIR_NAME = "share";
+
+	// Album that saved images go into: Pictures/ObscuraCam
+	private final static String OUTPUT_ALBUM = "ObscuraCam";
 
 
 	//handles threaded events for the UI thread
@@ -212,11 +222,17 @@ public class ImageEditor extends AppCompatActivity implements OnTouchListener, O
 			switch (msg.what) {
 
 				case 3: //completed
-					mProgressDialog.dismiss();
+					if (mProgressDialog != null && mProgressDialog.isShowing())
+						mProgressDialog.dismiss();
+					if (isFinishing())
+						break;
 
-					//Toast autodetectedToast = Toast.makeText(ImageEditor.this, result + " face(s) detected", Toast.LENGTH_SHORT);
-					//autodetectedToast.show();
-
+					// Tell the user what happened, especially when nothing was found (#111)
+					int faces = msg.arg1;
+					String text = faces > 0
+							? getResources().getQuantityString(R.plurals.faces_detected, faces, faces)
+							: getString(R.string.no_faces_detected);
+					Toast.makeText(ImageEditor.this, text, faces > 0 ? Toast.LENGTH_SHORT : Toast.LENGTH_LONG).show();
 					break;
 				default:
 					super.handleMessage(msg);
@@ -346,20 +362,9 @@ public class ImageEditor extends AppCompatActivity implements OnTouchListener, O
 			} else if (getIntent().hasExtra("bitmap")) {
 				Bitmap b = (Bitmap) getIntent().getExtras().get("bitmap");
 				setBitmap(b);
-
-				boolean autodetect = true;
-
-				if (autodetect) {
-
-					mProgressDialog = ProgressDialog.show(this, "", "Detecting faces...", true, true);
-
-					doAutoDetectionThread();
-
-
-				}
-
 				originalImageWidth = b.getWidth();
 				originalImageHeight = b.getHeight();
+				startAutoDetectionIfEnabled();
 				return;
 
 			}
@@ -368,156 +373,161 @@ public class ImageEditor extends AppCompatActivity implements OnTouchListener, O
 
 		// Load the image if it isn't null
 		if (originalImageUri != null) {
-
-//			try {
-//				InputStream is;
-//				if (originalImageUri.getScheme() != null && originalImageUri.getScheme().contentEquals("content"))
-//					is = getContentResolver().openInputStream(originalImageUri);
-//				else
-//					is = new FileInputStream(new File(originalImageUri.toString()));
-//				if (is != null) {
-//					// Get orientation of image
-//					try {
-//						ExifInterface ei = new ExifInterface(is);
-//						originalImageOrientation = ei.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL);
-//						debug(ObscuraApp.TAG,"Orientation: " + originalImageOrientation);
-//					} catch (IOException e1) {
-//						debug(ObscuraApp.TAG,"Couldn't get Orientation");
-//						e1.printStackTrace();
-//					}
-//					is.close();
-//				}
-//			} catch (Exception e) {
-//				e.printStackTrace();
-//			}
-//		}
-
-
-			// Get the orientation
-			File originalFilename = pullPathFromUri(originalImageUri);
-			try {
-				ExifInterface ei = new ExifInterface(originalFilename.getAbsolutePath());
-				originalImageOrientation = ei.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL);
-				debug(ObscuraApp.TAG, "Orientation: " + originalImageOrientation);
-			} catch (IOException e1) {
-				debug(ObscuraApp.TAG, "Couldn't get Orientation");
-				e1.printStackTrace();
+			if (!loadImage(originalImageUri)) {
+				Toast.makeText(this, R.string.error_loading_media, Toast.LENGTH_LONG).show();
+				finish();
+				return;
 			}
-
-			//debug(ObscuraApp.TAG,"loading uri: " + pullPathFromUri(originalImageUri));
-
-			// Load up smaller image
-			try {
-				// Load up the image's dimensions not the image itself
-				BitmapFactory.Options bmpFactoryOptions = new BitmapFactory.Options();
-				bmpFactoryOptions.inJustDecodeBounds = true;
-				// Needs to be this config for Google Face Detection 
-				bmpFactoryOptions.inPreferredConfig = Bitmap.Config.RGB_565;
-				// Parse the image
-				InputStream inputStream = streamFromUri(originalImageUri);
-				Bitmap loadedBitmap = BitmapFactory.decodeStream(inputStream, null, bmpFactoryOptions);
-				inputStream.close();
-
-				// Hold onto the unscaled dimensions
-				originalImageWidth = bmpFactoryOptions.outWidth;
-				originalImageHeight = bmpFactoryOptions.outHeight;
-				// If it is rotated, transpose the width and height
-				// Should probably look to see if there are different rotation constants being used
-				if (originalImageOrientation == ExifInterface.ORIENTATION_ROTATE_90
-						|| originalImageOrientation == ExifInterface.ORIENTATION_ROTATE_270) {
-					int tmpWidth = originalImageWidth;
-					originalImageWidth = originalImageHeight;
-					originalImageHeight = tmpWidth;
-				}
-
-				// Get the current display to calculate ratios
-				Display currentDisplay = getWindowManager().getDefaultDisplay();
-
-				// Ratios between the display and the image
-                /**
-				double widthRatio = Math.floor(bmpFactoryOptions.outWidth / currentDisplay.getWidth());
-				double heightRatio = Math.floor(bmpFactoryOptions.outHeight / currentDisplay.getHeight());
-
-				// If both of the ratios are greater than 1,
-				// one of the sides of the image is greater than the screen
-				if (heightRatio > widthRatio) {
-					// Height ratio is larger, scale according to it
-					inSampleSize = (int) heightRatio;
-				} else {
-					// Width ratio is larger, scale according to it
-					inSampleSize = (int) widthRatio;
-				}
-
-				bmpFactoryOptions.inSampleSize = inSampleSize;
-                 **/
-
-                bmpFactoryOptions.inSampleSize = 2;
-                boolean notLoaded = true;
-
-                while (notLoaded) {
-
-                    try {
-                        // Decode it for real
-                        bmpFactoryOptions.inJustDecodeBounds = false;
-                        inputStream = streamFromUri(originalImageUri);
-                        loadedBitmap = BitmapFactory.decodeStream(inputStream, null, bmpFactoryOptions);
-                        inputStream.close();
-                        debug(ObscuraApp.TAG, "Was: " + loadedBitmap.getConfig());
-                        notLoaded = false;
-                    }
-                    catch (OutOfMemoryError oom)
-                    {
-                        bmpFactoryOptions.inSampleSize *= 2;
-                        //try again but smaller!
-                    }
-                }
-
-				if (loadedBitmap == null) {
-					debug(ObscuraApp.TAG, "bmp is null");
-
-				} else {
-					// Only dealing with 90 and 270 degree rotations, might need to check for others
-					if (originalImageOrientation == ExifInterface.ORIENTATION_ROTATE_90) {
-						debug(ObscuraApp.TAG, "Rotating Bitmap 90");
-						Matrix rotateMatrix = new Matrix();
-						rotateMatrix.postRotate(90);
-						loadedBitmap = Bitmap.createBitmap(loadedBitmap, 0, 0, loadedBitmap.getWidth(), loadedBitmap.getHeight(), rotateMatrix, false);
-					} else if (originalImageOrientation == ExifInterface.ORIENTATION_ROTATE_270) {
-						debug(ObscuraApp.TAG, "Rotating Bitmap 270");
-						Matrix rotateMatrix = new Matrix();
-						rotateMatrix.postRotate(270);
-						loadedBitmap = Bitmap.createBitmap(loadedBitmap, 0, 0, loadedBitmap.getWidth(), loadedBitmap.getHeight(), rotateMatrix, false);
-					}
-
-					setBitmap(loadedBitmap);
-
-					boolean autodetect = true;
-
-					if (autodetect) {
-						// Do auto detect popup
-
-						mProgressDialog = ProgressDialog.show(this, "", "Detecting faces...", true, true);
-
-						doAutoDetectionThread();
-					}
-				}
-			} catch (Exception e) {
-				Log.e(ObscuraApp.TAG, "error loading bitmap from Uri: " + e.getMessage(), e);
-			}
-
-
+			startAutoDetectionIfEnabled();
 		}
-		
-		/*
-		bitmapCornerUL = BitmapFactory.decodeResource(getResources(),
-                R.drawable.edit_region_corner_ul);
-		bitmapCornerUR = BitmapFactory.decodeResource(getResources(),
-                R.drawable.edit_region_corner_ur);
-		bitmapCornerLL = BitmapFactory.decodeResource(getResources(),
-                R.drawable.edit_region_corner_ll);
-		bitmapCornerLR = BitmapFactory.decodeResource(getResources(),
-                R.drawable.edit_region_corner_lr);
-		 */
+	}
+
+	// Largest image we decode. 24 MP covers almost every phone photo at full resolution (#144)
+	// while keeping the bitmap under the ~100 MB limit Android enforces for drawing it.
+	private static final long MAX_DECODE_PIXELS = 24_000_000L;
+
+	/**
+	 * Decodes the image at the highest resolution memory allows and applies its EXIF orientation.
+	 *
+	 * Reads everything through streams: content:// URIs from the document picker ("Others") and
+	 * from other apps have no file path, so the old path-based EXIF read crashed with a
+	 * NullPointerException (#140, #130).
+	 *
+	 * @return false if the image could not be decoded
+	 */
+	private boolean loadImage(Uri uri) {
+		originalImageOrientation = readExifOrientation(uri);
+
+		// Pass 1: read only the dimensions.
+		BitmapFactory.Options options = new BitmapFactory.Options();
+		options.inJustDecodeBounds = true;
+		if (!decode(uri, options) || options.outWidth <= 0 || options.outHeight <= 0) {
+			return false;
+		}
+
+		// Pass 2: decode for real. Start at full size (previously a fixed inSampleSize of 2
+		// halved every photo, #144) and halve only when the image is huge or memory runs out.
+		options.inJustDecodeBounds = false;
+		// RGB_565 is required by android.media.FaceDetector.
+		options.inPreferredConfig = Bitmap.Config.RGB_565;
+		options.inSampleSize = 1;
+		while ((long) (options.outWidth / options.inSampleSize) * (options.outHeight / options.inSampleSize) > MAX_DECODE_PIXELS) {
+			options.inSampleSize *= 2;
+		}
+
+		Bitmap loadedBitmap = null;
+		while (loadedBitmap == null && options.inSampleSize <= 64) {
+			try {
+				InputStream is = streamFromUri(uri);
+				if (is == null)
+					return false;
+				try {
+					loadedBitmap = BitmapFactory.decodeStream(is, null, options);
+				} finally {
+					closeQuietly(is);
+				}
+				if (loadedBitmap == null)
+					return false; // not a decodable image
+			} catch (OutOfMemoryError oom) {
+				options.inSampleSize *= 2;
+			}
+		}
+		if (loadedBitmap == null)
+			return false;
+
+		inSampleSize = options.inSampleSize;
+
+		Matrix orientationMatrix = matrixForExifOrientation(originalImageOrientation);
+		if (orientationMatrix != null) {
+			loadedBitmap = Bitmap.createBitmap(loadedBitmap, 0, 0, loadedBitmap.getWidth(), loadedBitmap.getHeight(), orientationMatrix, false);
+		}
+
+		originalImageWidth = loadedBitmap.getWidth() * inSampleSize;
+		originalImageHeight = loadedBitmap.getHeight() * inSampleSize;
+		setBitmap(loadedBitmap);
+		return true;
+	}
+
+	/** Runs BitmapFactory on the uri; returns false if the stream could not be opened. */
+	private boolean decode(Uri uri, BitmapFactory.Options options) {
+		InputStream is = streamFromUri(uri);
+		if (is == null)
+			return false;
+		try {
+			BitmapFactory.decodeStream(is, null, options);
+			return true;
+		} finally {
+			closeQuietly(is);
+		}
+	}
+
+	private int readExifOrientation(Uri uri) {
+		InputStream is = streamFromUri(uri);
+		if (is == null)
+			return ExifInterface.ORIENTATION_NORMAL;
+		try {
+			return new ExifInterface(is).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL);
+		} catch (IOException | RuntimeException e) {
+			debug(ObscuraApp.TAG, "Couldn't get orientation: " + e);
+			return ExifInterface.ORIENTATION_NORMAL;
+		} finally {
+			closeQuietly(is);
+		}
+	}
+
+	/**
+	 * Matrix that turns the stored pixels upright. Handles all eight EXIF orientations;
+	 * the old code only knew 90 and 270, so 180-degree and mirrored photos showed up wrong (#84).
+	 *
+	 * @return null when no transform is needed
+	 */
+	static Matrix matrixForExifOrientation(int orientation) {
+		Matrix m = new Matrix();
+		switch (orientation) {
+			case ExifInterface.ORIENTATION_FLIP_HORIZONTAL:
+				m.setScale(-1, 1);
+				break;
+			case ExifInterface.ORIENTATION_ROTATE_180:
+				m.setRotate(180);
+				break;
+			case ExifInterface.ORIENTATION_FLIP_VERTICAL:
+				m.setScale(1, -1);
+				break;
+			case ExifInterface.ORIENTATION_TRANSPOSE:
+				m.setRotate(90);
+				m.postScale(-1, 1);
+				break;
+			case ExifInterface.ORIENTATION_ROTATE_90:
+				m.setRotate(90);
+				break;
+			case ExifInterface.ORIENTATION_TRANSVERSE:
+				m.setRotate(-90);
+				m.postScale(-1, 1);
+				break;
+			case ExifInterface.ORIENTATION_ROTATE_270:
+				m.setRotate(270);
+				break;
+			default:
+				return null;
+		}
+		return m;
+	}
+
+	/** Face detection is optional (#145): some people only obscure number plates, signs, etc. */
+	private void startAutoDetectionIfEnabled() {
+		if (imageBitmap != null && ImagePreferences.isAutoDetectFacesEnabled(this)) {
+			mProgressDialog = ProgressDialog.show(this, "", getString(R.string.detecting_faces), true, true);
+			doAutoDetectionThread();
+		}
+	}
+
+	private static void closeQuietly(java.io.Closeable c) {
+		if (c != null) {
+			try {
+				c.close();
+			} catch (IOException ignored) {
+			}
+		}
 	}
 
 	private void setBitmap(Bitmap nBitmap) {
@@ -689,8 +699,8 @@ public class ImageEditor extends AppCompatActivity implements OnTouchListener, O
 	private void doAutoDetectionThread() {
 		Thread thread = new Thread() {
 			public void run() {
-				doAutoDetection();
-				Message msg = mHandler.obtainMessage(3);
+				int faces = doAutoDetection();
+				Message msg = mHandler.obtainMessage(3, faces, 0);
 				mHandler.sendMessage(msg);
 			}
 		};
@@ -750,33 +760,52 @@ public class ImageEditor extends AppCompatActivity implements OnTouchListener, O
 	/*
 	 * The actual face detection calling method
 	 */
+	// FaceDetector is slow and memory hungry on large bitmaps; faces stay detectable at this size.
+	private static final int FACE_DETECTION_MAX_DIMENSION = 1024;
+
 	private ArrayList<DetectedFace> runFaceDetection() {
 		ArrayList<DetectedFace> dFaces = new ArrayList<DetectedFace>();
+		if (imageBitmap == null)
+			return dFaces;
 
 		try {
+			// Work on a downscaled copy (the editor now keeps full resolution, #144).
+			// FaceDetector also needs RGB_565 and an even width, or it throws.
+			float scale = Math.min(1f, (float) FACE_DETECTION_MAX_DIMENSION / Math.max(imageBitmap.getWidth(), imageBitmap.getHeight()));
+			int w = Math.max(2, Math.round(imageBitmap.getWidth() * scale) & ~1);
+			int h = Math.max(1, Math.round(imageBitmap.getHeight() * scale));
+			Bitmap detectBitmap = Bitmap.createBitmap(w, h, Bitmap.Config.RGB_565);
+			new Canvas(detectBitmap).drawBitmap(imageBitmap, null, new RectF(0, 0, w, h), new Paint(Paint.FILTER_BITMAP_FLAG));
+			float scaleX = (float) imageBitmap.getWidth() / w;
+			float scaleY = (float) imageBitmap.getHeight() / h;
 
-			FaceDetection fd = new AndroidFaceDetection(imageBitmap.getWidth(), imageBitmap.getHeight());
-			int numFaces = fd.findFaces(imageBitmap);
+			ArrayList<DetectedFace> found = detectFaces(detectBitmap);
+			if (found.isEmpty())
+				found = detectFaces(toGrayscale(detectBitmap));
 
-			if (numFaces > 0)
-				dFaces.addAll(fd.getFaces(numFaces));
-            else
-            {
-                fd.release();
-                Bitmap imageGrayScale = toGrayscale(imageBitmap);
-                fd = new AndroidFaceDetection(imageGrayScale.getWidth(), imageGrayScale.getHeight());
-                numFaces = fd.findFaces(imageGrayScale);
-                if (numFaces > 0)
-                    dFaces.addAll(fd.getFaces(numFaces));
-            }
-
-			fd.release();
-
-		} catch (NullPointerException e) {
-			dFaces = null;
-            Log.e(getClass().getName(),"error detecting faces",e);
+			// Map back to full-size image coordinates
+			for (DetectedFace face : found) {
+				face.bounds = new RectF(face.bounds.left * scaleX, face.bounds.top * scaleY,
+						face.bounds.right * scaleX, face.bounds.bottom * scaleY);
+				if (face.midpoint != null)
+					face.midpoint = new PointF(face.midpoint.x * scaleX, face.midpoint.y * scaleY);
+				face.eyeDistance *= scaleX;
+				dFaces.add(face);
+			}
+		} catch (RuntimeException | OutOfMemoryError e) {
+			Log.e(getClass().getName(), "error detecting faces", e);
 		}
 		return dFaces;
+	}
+
+	private ArrayList<DetectedFace> detectFaces(Bitmap bitmap) {
+		FaceDetection fd = new AndroidFaceDetection(bitmap.getWidth(), bitmap.getHeight());
+		try {
+			int numFaces = fd.findFaces(bitmap);
+			return numFaces > 0 ? fd.getFaces(numFaces) : new ArrayList<DetectedFace>();
+		} finally {
+			fd.release();
+		}
 	}
 
 	public Bitmap toGrayscale(Bitmap bmpOriginal) {
@@ -1130,16 +1159,7 @@ public class ImageEditor extends AppCompatActivity implements OnTouchListener, O
 		} else if (v == btnPreview) {
 			showPreview(true);
 		} else if (v == btnSave) {
-			//Why does this not show?
-			mProgressDialog = ProgressDialog.show(this, "", "Saving...", true, true);
-
-			mHandler.postDelayed(new Runnable() {
-				@Override
-				public void run() {
-					// this will be done in the Pipeline Thread
-					checkWritePermissionThenSave();
-				}
-			}, 500);
+			checkWritePermissionThenSave();
 		} else if (v == btnShare) {
 			// Share Image
 			shareImage();
@@ -1196,8 +1216,8 @@ public class ImageEditor extends AppCompatActivity implements OnTouchListener, O
 		newRegion.left = startPoint.x - halfSize;
 		newRegion.top = startPoint.y - halfSize;
 
-		newRegion.right = startPoint.x + defaultSize;
-		newRegion.left = startPoint.y + defaultSize;
+		newRegion.right = startPoint.x + halfSize;
+		newRegion.bottom = startPoint.y + halfSize;
 
 		Matrix iMatrix = new Matrix();
 		matrix.invert(iMatrix);
@@ -1217,16 +1237,7 @@ public class ImageEditor extends AppCompatActivity implements OnTouchListener, O
 
 			case R.id.menu_save:
 
-				//Why does this not show?
-				mProgressDialog = ProgressDialog.show(this, "", "Saving...", true, true);
-
-				mHandler.postDelayed(new Runnable() {
-					@Override
-					public void run() {
-						// this will be done in the Pipeline Thread
-						checkWritePermissionThenSave();
-					}
-				}, 500);
+				checkWritePermissionThenSave();
 
 
 				return true;
@@ -1325,7 +1336,8 @@ public class ImageEditor extends AppCompatActivity implements OnTouchListener, O
 			Intent share = new Intent(Intent.ACTION_SEND);
 			share.setType(MIME_TYPE_JPEG);
 			share.putExtra(Intent.EXTRA_STREAM, tmpImageUri);
-			startActivity(Intent.createChooser(share, "Share Image"));
+			share.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+			startActivity(Intent.createChooser(share, getString(R.string.menu_share)));
 		} else {
 			Toast t = Toast.makeText(this, "Saving Temporary File Failed!", Toast.LENGTH_SHORT);
 			t.show();
@@ -1348,6 +1360,7 @@ public class ImageEditor extends AppCompatActivity implements OnTouchListener, O
 		Intent iView = new Intent(Intent.ACTION_SEND);
         iView.setType(MIME_TYPE_JPEG);
         iView.putExtra(Intent.EXTRA_STREAM, uriToShare);
+        iView.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
 		startActivity(Intent.createChooser(iView, getString(R.string.view_image)));
 
 	}
@@ -1504,183 +1517,152 @@ public class ImageEditor extends AppCompatActivity implements OnTouchListener, O
 	}
 
 	/*
-     * Save a temporary image for sharing only
-     */
+	 * Save a temporary image for sharing only.
+	 *
+	 * Written to the app's private cache and shared through FileProvider, so it needs no
+	 * storage permission (#133) and works on Android 7+, where file:// URIs are forbidden.
+	 */
 	private Uri saveTmpImage() {
-
-		String storageState = Environment.getExternalStorageState();
-		if (!Environment.MEDIA_MOUNTED.equals(storageState)) {
-			Toast t = Toast.makeText(this, "External storage not available", Toast.LENGTH_SHORT);
-			t.show();
+		if (imageBitmap == null)
 			return null;
-		}
 
-		// Create the bitmap that will be saved
-		// Perhaps this should be smaller than screen size??
-		int w = imageBitmap.getWidth();
-		int h = imageBitmap.getHeight();
-		Bitmap obscuredBmp = createObscuredBitmap(w, h, false);
-
-		// Create the Uri - This can't be "private"
-		File tmpFileDirectory = new File(Environment.getExternalStorageDirectory().getPath() + TMP_FILE_DIRECTORY);
-		File tmpFile = new File(tmpFileDirectory, TMP_FILE_NAME);
-		debug(ObscuraApp.TAG, tmpFile.getPath());
-
+		File shareDir = new File(getCacheDir(), SHARE_DIR_NAME);
+		File tmpFile = new File(shareDir, TMP_FILE_NAME);
+		OutputStream os = null;
 		try {
-			if (!tmpFileDirectory.exists()) {
-				tmpFileDirectory.mkdirs();
-			}
-			Uri tmpImageUri = Uri.fromFile(tmpFile);
-
-			OutputStream imageFileOS;
-
-			int quality = 100;
-			imageFileOS = getContentResolver().openOutputStream(tmpImageUri);
-			obscuredBmp.compress(CompressFormat.JPEG, quality, imageFileOS);
-
-			return tmpImageUri;
-		} catch (FileNotFoundException e) {
-			mProgressDialog.cancel();
-			e.printStackTrace();
+			if (!shareDir.exists() && !shareDir.mkdirs())
+				return null;
+			Bitmap bmp = createObscuredBitmap(imageBitmap.getWidth(), imageBitmap.getHeight(), false);
+			os = new FileOutputStream(tmpFile);
+			if (!bmp.compress(CompressFormat.JPEG, ImagePreferences.getJpegQuality(this), os))
+				return null;
+			return FileProvider.getUriForFile(this, BuildConfig.APPLICATION_ID + ".provider", tmpFile);
+		} catch (IOException | RuntimeException e) {
+			Log.e(ObscuraApp.TAG, "error saving temp file for sharing", e);
 			return null;
+		} finally {
+			closeQuietly(os);
 		}
 	}
 
 	private void checkWritePermissionThenSave() {
-		int permissionCheck = ContextCompat.checkSelfPermission(this,
-				Manifest.permission.WRITE_EXTERNAL_STORAGE);
-		if (Build.VERSION.SDK_INT <= 18)
-			permissionCheck = PackageManager.PERMISSION_GRANTED; // For old devices we ask in the manifest!
-		if (permissionCheck != PackageManager.PERMISSION_GRANTED) {
-			ActivityCompat.requestPermissions(this, new String[]{
-							Manifest.permission.READ_EXTERNAL_STORAGE,
-							Manifest.permission.WRITE_EXTERNAL_STORAGE},
-					WRITE_EXTERNAL_STORAGE_PERMISSION_REQUEST);
+		String[] needed = MediaPermissions.forWriting(); // empty on Android 10+
+		if (MediaPermissions.hasAll(this, needed)) {
+			saveImageInBackground();
 		} else {
-			saveImage();
+			ActivityCompat.requestPermissions(this, needed, WRITE_EXTERNAL_STORAGE_PERMISSION_REQUEST);
 		}
 	}
 
 	@Override
 	public void onRequestPermissionsResult(int requestCode, String permissions[], int[] grantResults) {
-		switch (requestCode) {
-			case WRITE_EXTERNAL_STORAGE_PERMISSION_REQUEST: {
-				// If request is cancelled, the result arrays are empty.
-				if (grantResults.length > 1
-						&& grantResults[0] == PackageManager.PERMISSION_GRANTED
-						&& grantResults[1] == PackageManager.PERMISSION_GRANTED) {
-					saveImage();
-				}
+		super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+		if (requestCode == WRITE_EXTERNAL_STORAGE_PERMISSION_REQUEST) {
+			if (MediaPermissions.allGranted(grantResults)) {
+				saveImageInBackground();
+			} else {
+				Toast.makeText(this, R.string.error_saving, Toast.LENGTH_LONG).show();
 			}
-			break;
 		}
 	}
 
 	/*
-     * The method that actually saves the altered image.  
-     * This in combination with createObscuredBitmap could/should be done in another, more memory efficient manner. 
-     */
-	private boolean saveImage() {
-
-        SimpleDateFormat dateFormat = new SimpleDateFormat(EXPORT_DATE_FORMAT);
-        Date date = new Date();
-        String dateString = dateFormat.format(date);
-
-        /**
-		ContentValues cv = new ContentValues();
-
-		// Add a date so it shows up in a reasonable place in the gallery - Should we do this??
-
-		// Which one?
-		cv.put(Images.Media.DATE_ADDED, dateString);
-		cv.put(Images.Media.DATE_TAKEN, dateString);
-		cv.put(Images.Media.DATE_MODIFIED, dateString);
-		cv.put(Images.Media.TITLE, dateString);
-		//    cv.put(Images.Media.BUCKET_ID, "ObscuraCam");
-		//    cv.put(Images.Media.DESCRIPTION, "ObscuraCam");
-		//cv.put(Images.Media.CONTENT_TYPE, MIME_TYPE_JPEG);
-
-		// Uri is savedImageUri which is global
-		// Create the Uri, this should put it in the gallery
-		// New Each time
-		savedImageUri = getContentResolver().insert(
-				Media.EXTERNAL_CONTENT_URI, cv);
-
-		if (savedImageUri == null)
-			return false;
-         **/
-
-        File fileImageOut =
-                new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES),
-                        "obscura" + new Date().getTime() + ".jpg");
-
-        savedImageUri = Uri.fromFile(fileImageOut);
-
-		boolean nativeSuccess = false;
-
-        /**
-		if (canDoNative()) {
-			try {
-				Uri savedNativeTmp = processNativeRes(originalImageUri);
-
-				copy(savedNativeTmp, savedImageUri);
-
-				nativeSuccess = true;
-
-			} catch (Exception e) {
-				Log.e(ObscuraApp.TAG, "error doing native redact", e);
+	 * Encoding a full-resolution JPEG takes seconds; doing it on the UI thread froze the app
+	 * and could trigger "app not responding" (#101, #69).
+	 */
+	private void saveImageInBackground() {
+		if (imageBitmap == null)
+			return;
+		mProgressDialog = ProgressDialog.show(this, "", getString(R.string.saving), true, false);
+		new Thread() {
+			public void run() {
+				final Uri saved = saveImage();
+				runOnUiThread(new Runnable() {
+					public void run() {
+						if (mProgressDialog != null && mProgressDialog.isShowing())
+							mProgressDialog.dismiss();
+						if (isFinishing())
+							return;
+						if (saved == null) {
+							Toast.makeText(ImageEditor.this, R.string.error_saving, Toast.LENGTH_LONG).show();
+							return;
+						}
+						savedImageUri = saved;
+						Snackbar snackbar = Snackbar.make(findViewById(R.id.frameRoot), R.string.processing_complete, Snackbar.LENGTH_INDEFINITE);
+						snackbar.setAction(R.string.action_open, new OnClickListener() {
+							@Override
+							public void onClick(View view) {
+								viewImage(savedImageUri);
+							}
+						});
+						snackbar.show();
+					}
+				});
 			}
-		}**/
+		}.start();
+	}
 
+	/*
+	 * Writes the obscured image to Pictures/ObscuraCam and adds it to the gallery.
+	 * Android 10+ goes through MediaStore (no permission needed; direct file writes are
+	 * blocked by scoped storage). Older versions write the file and ask the media scanner to index it.
+	 *
+	 * @return the saved image's Uri, or null on failure
+	 */
+	private Uri saveImage() {
+		String fileName = "obscura" + new Date().getTime() + ".jpg";
+		OutputStream os = null;
+		Uri target = null;
+		File legacyFile = null;
+		try {
+			Bitmap bmp = createObscuredBitmap(imageBitmap.getWidth(), imageBitmap.getHeight(), false);
 
-		if (!nativeSuccess) {
-			try {
-
-				obscuredBmp = createObscuredBitmap(imageBitmap.getWidth(), imageBitmap.getHeight(), false);
-
-				OutputStream imageFileOS;
-
-				int quality = 100; //lossless?  good question - still a smaller version
-				imageFileOS = getContentResolver().openOutputStream(savedImageUri);
-				obscuredBmp.compress(CompressFormat.JPEG, quality, imageFileOS);
-
-			} catch (Exception e) {
-				Log.e(ObscuraApp.TAG, "error doing redact", e);
-				return false;
+			if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+				ContentValues values = new ContentValues();
+				values.put(MediaStore.MediaColumns.DISPLAY_NAME, fileName);
+				values.put(MediaStore.MediaColumns.MIME_TYPE, MIME_TYPE_JPEG);
+				values.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/" + OUTPUT_ALBUM);
+				values.put(MediaStore.MediaColumns.IS_PENDING, 1);
+				target = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
+				if (target == null)
+					return null;
+				os = getContentResolver().openOutputStream(target);
+			} else {
+				File dir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), OUTPUT_ALBUM);
+				if (!dir.exists() && !dir.mkdirs())
+					return null;
+				legacyFile = new File(dir, fileName);
+				os = new FileOutputStream(legacyFile);
+				target = Uri.fromFile(legacyFile);
 			}
 
+			if (os == null || !bmp.compress(CompressFormat.JPEG, ImagePreferences.getJpegQuality(this), os))
+				throw new IOException("JPEG compression failed");
+			os.close();
+			os = null;
+
+			if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+				ContentValues done = new ContentValues();
+				done.put(MediaStore.MediaColumns.IS_PENDING, 0);
+				getContentResolver().update(target, done, null, null);
+			} else {
+				MediaScannerConnection.scanFile(this, new String[]{legacyFile.getAbsolutePath()}, new String[]{MIME_TYPE_JPEG}, null);
+			}
+			return target;
+		} catch (IOException | RuntimeException | OutOfMemoryError e) {
+			Log.e(ObscuraApp.TAG, "error doing redact", e);
+			closeQuietly(os);
+			// Don't leave a half-written or pending entry behind
+			if (target != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+				try {
+					getContentResolver().delete(target, null, null);
+				} catch (RuntimeException ignored) {
+				}
+			} else if (legacyFile != null) {
+				legacyFile.delete();
+			}
+			return null;
 		}
-
-		/**
-		// package and insert exif data
-		mp = new MetadataParser(dateFormat.format(date), pullPathFromUri(savedImageUri), this);
-		Iterator<ImageRegion> i = imageRegions.iterator();
-		while (i.hasNext()) {
-			mp.addRegion(i.next().getRegionProcessor().getProperties());
-		}
-
-		mp.flushMetadata();
-         **/
-
-        Intent intent =
-                new Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE);
-        intent.setData(savedImageUri);
-        sendBroadcast(intent);
-
-        mProgressDialog.cancel();
-
-//                        showDeleteOriginalDialog();
-
-        Snackbar snackbar = Snackbar.make(findViewById(R.id.frameRoot),R.string.processing_complete,Snackbar.LENGTH_INDEFINITE);
-        snackbar.setAction("Open", new OnClickListener() {
-            @Override
-            public void onClick(View view) {
-                viewImage(savedImageUri);
-            }
-        });
-        snackbar.show();
-
-		return true;
 	}
 
 	// Queries the contentResolver to pull out the path for the actual file.

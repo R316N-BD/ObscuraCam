@@ -118,4 +118,34 @@
     <string name="colorize">Colorize:</string>
     <string name="pixelize">Pixelize:</string>
     <string name="mute">Mute</string>
+    <!-- Photo settings (#144, #145) and face detection hint (#111) -->
+    <string name="menu_settings">Settings</string>
+    <string name="pref_category_photos">Photos</string>
+    <string name="pref_autodetect_faces_title">Detect faces automatically</string>
+    <string name="pref_autodetect_faces_summary">Mark faces for obscuring when a photo opens. Turn off to select areas yourself.</string>
+    <string name="pref_jpeg_quality_title">Saved photo quality</string>
+    <string name="pref_jpeg_quality_summary">JPEG quality of saved and shared photos. Lower values make smaller files.</string>
+    <string-array name="pref_jpeg_quality_names">
+        <item>Maximum (100)</item>
+        <item>High (95)</item>
+        <item>Good (90)</item>
+        <item>Medium (80)</item>
+        <item>Small (70)</item>
+    </string-array>
+    <string-array name="pref_jpeg_quality_values" translatable="false">
+        <item>100</item>
+        <item>95</item>
+        <item>90</item>
+        <item>80</item>
+        <item>70</item>
+    </string-array>
+    <string name="detecting_faces">Detecting faces…</string>
+    <string name="no_faces_detected">No faces found. Tap the photo to add an area to obscure.</string>
+    <plurals name="faces_detected">
+        <item quantity="one">%d face found</item>
+        <item quantity="other">%d faces found</item>
+    </plurals>
+    <string name="saving">Saving…</string>
+    <string name="error_saving">Could not save the photo</string>
+    <string name="error_loading_media">Could not open this file</string>
 </resources>

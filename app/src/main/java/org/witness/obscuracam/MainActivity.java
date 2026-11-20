@@ -27,6 +27,8 @@ import android.widget.Button;
 import org.witness.obscuracam.ui.AlbumLayoutManager;
 import org.witness.obscuracam.ui.AlbumsActivity;
 import org.witness.obscuracam.ui.ImageEditor;
+import org.witness.obscuracam.ui.ImagePreferences;
+import org.witness.obscuracam.util.MediaPermissions;
 import org.witness.obscuracam.ui.adapters.AskForPermissionAdapter;
 import org.witness.obscuracam.ui.adapters.GalleryCursorRecyclerViewAdapter;
 import org.witness.obscuracam.video.VideoEditor;
@@ -53,6 +55,7 @@ public class MainActivity extends AppCompatActivity implements GalleryCursorRecy
 	final static int IMAGE_EDITOR = 2;
 	final static int VIDEO_EDITOR = 3;
 	final static int ABOUT = 0;
+	final static int SETTINGS = 1;
 	
 	private RecyclerView recyclerViewPhotos;
 	private View layoutGalleryInfo;
@@ -242,7 +245,8 @@ public class MainActivity extends AppCompatActivity implements GalleryCursorRecy
 		
     	MenuItem aboutMenuItem = menu.add(Menu.NONE, ABOUT, Menu.NONE, aboutString);
     	aboutMenuItem.setIcon(R.drawable.ic_menu_about);
-    	
+
+		menu.add(Menu.NONE, SETTINGS, Menu.NONE, R.string.menu_settings);
     	
     	return true;
 	}
@@ -252,6 +256,10 @@ public class MainActivity extends AppCompatActivity implements GalleryCursorRecy
         	case ABOUT:
         		displayAbout();
         		return true;
+
+			case SETTINGS:
+				startActivity(new Intent(this, ImagePreferences.class));
+				return true;
         		
         	default:
         		
@@ -273,11 +281,7 @@ public class MainActivity extends AppCompatActivity implements GalleryCursorRecy
     }
 
 	private void setCurrentMode() {
-		int permissionCheck = ContextCompat.checkSelfPermission(this,
-				Manifest.permission.READ_EXTERNAL_STORAGE);
-		if (Build.VERSION.SDK_INT <= 18)
-			permissionCheck = PackageManager.PERMISSION_GRANTED; // For old devices we ask in the manifest!
-		if (permissionCheck != PackageManager.PERMISSION_GRANTED) {
+		if (!MediaPermissions.hasAll(this, MediaPermissions.forReading())) {
 			AskForPermissionAdapter adapter = new AskForPermissionAdapter(this);
 			recyclerViewPhotos.setLayoutManager(new LinearLayoutManager(this, LinearLayoutManager.VERTICAL, false));
 			recyclerViewPhotos.setAdapter(adapter);
@@ -287,10 +291,7 @@ public class MainActivity extends AppCompatActivity implements GalleryCursorRecy
 	}
 
 	public void askForReadExternalStoragePermission() {
-		ActivityCompat.requestPermissions(this, new String[]{
-					Manifest.permission.READ_EXTERNAL_STORAGE,
-					Manifest.permission.WRITE_EXTERNAL_STORAGE
-				},
+		ActivityCompat.requestPermissions(this, MediaPermissions.forReading(),
 				READ_EXTERNAL_STORAGE_PERMISSION_REQUEST);
 	}
 
@@ -299,9 +300,7 @@ public class MainActivity extends AppCompatActivity implements GalleryCursorRecy
 		switch (requestCode) {
 			case READ_EXTERNAL_STORAGE_PERMISSION_REQUEST: {
 				// If request is cancelled, the result arrays are empty.
-				if (grantResults.length > 1
-						&& grantResults[0] == PackageManager.PERMISSION_GRANTED
-						&& grantResults[1] == PackageManager.PERMISSION_GRANTED) {
+				if (MediaPermissions.allGranted(grantResults)) {
 					applyCurrentMode();
 				}
 			}

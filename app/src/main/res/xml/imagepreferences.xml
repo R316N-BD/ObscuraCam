@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android">
+    <PreferenceCategory android:title="@string/pref_category_photos">
+        <CheckBoxPreference
+            android:key="pref_autodetect_faces"
+            android:title="@string/pref_autodetect_faces_title"
+            android:summary="@string/pref_autodetect_faces_summary"
+            android:defaultValue="true" />
+        <ListPreference
+            android:key="pref_jpeg_quality"
+            android:title="@string/pref_jpeg_quality_title"
+            android:summary="@string/pref_jpeg_quality_summary"
+            android:dialogTitle="@string/pref_jpeg_quality_title"
+            android:entries="@array/pref_jpeg_quality_names"
+            android:entryValues="@array/pref_jpeg_quality_values"
+            android:defaultValue="100" />
+    </PreferenceCategory>
+</PreferenceScreen>
