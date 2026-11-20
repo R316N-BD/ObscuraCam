@@ -280,7 +280,8 @@ public class ImageRegion
                 {
                 	
                 	
-                	if (Math.abs(mStartPoint.x- event.getX()) > MIN_MOVE)
+                	// Count movement on either axis; checking only X ignored vertical drags (#143)
+                	if (Math.hypot(mStartPoint.x - event.getX(), mStartPoint.y - event.getY()) > MIN_MOVE)
                 	{
 	                	moved = true;
 	                	
@@ -325,7 +326,10 @@ public class ImageRegion
 							}
 						}
 
-                		if ((left+CORNER_MAX) > right || (top+CORNER_MAX) > bottom)
+                		// Minimum size is CORNER_MAX *screen* pixels, converted to image pixels, so a
+                		// region can be made as small as it looks at any zoom level (#143)
+                		float minSize = mImageEditor.getMatrixInverted().mapRadius(CORNER_MAX);
+                		if ((left+minSize) > right || (top+minSize) > bottom)
                 			return false;
                 		
 	                	
